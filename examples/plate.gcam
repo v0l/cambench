@@ -1,0 +1,11 @@
+machine rapid=3000 clearance=5 grid=0.25 tol=0.05
+stock 60 40 10 material=aluminium
+tool 1 endmill 6 flutes=2 flute_len=20 holder=20
+tool 2 vbit 12 angle=90
+face tool=1 depth=0.5
+pocket rect 10 10 40 20 tool=1 depth=4
+adaptive circle 30 20 6 tool=1 depth=6
+drill 5,5 55,5 55,35 5,35 tool=1 depth=3
+chamfer rect 10 10 40 20 tool=2 width=1
+engrave 12,35 48,35 tool=2 depth=0.5
+profile rect 0 0 60 40 tool=1 depth=10 side=outside tabs=4

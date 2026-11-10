@@ -1,0 +1,111 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to dry-run (nothing is published)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - name: Tag matches the crate version and the changelog
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          ver=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          [ "${tag#v}" = "$ver" ] || { echo "tag $tag is not Cargo version $ver"; exit 1; }
+          grep -q "^## \[$ver\]" CHANGELOG.md || { echo "CHANGELOG.md has no entry for $ver"; exit 1; }
+
+  build:
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+          - target: aarch64-apple-darwin
+            os: macos-15
+          - target: x86_64-apple-darwin
+            os: macos-15
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: package
+        shell: bash
+        run: |
+          name=cambench-${{ matrix.target }}
+          mkdir -p "dist/$name/skills" "dist/$name/examples"
+          cp -r skills/cambench "dist/$name/skills/"
+          cp examples/plate.gcam "dist/$name/examples/"
+          cp README.md LICENSE CHANGELOG.md "dist/$name/"
+          cd dist
+          if [[ "${{ matrix.target }}" == *windows* ]]; then
+            cp ../target/${{ matrix.target }}/release/cambench.exe ../target/${{ matrix.target }}/release/cambench-ui.exe "$name/"
+            7z a "$name.zip" "$name" >/dev/null
+            sha256sum "$name.zip" > "$name.zip.sha256"
+          else
+            cp ../target/${{ matrix.target }}/release/cambench ../target/${{ matrix.target }}/release/cambench-ui "$name/"
+            tar czf "$name.tar.gz" "$name"
+            shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cambench-${{ matrix.target }}
+          if-no-files-found: error
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+      - name: Source archive
+        run: |
+          mkdir -p dist-src
+          name=cambench-${GITHUB_REF_NAME}-source.tar.gz
+          git ls-files -z | tar --null -T - --transform "s,^,cambench-${GITHUB_REF_NAME}/," -czf "dist-src/$name"
+          (cd dist-src && sha256sum "$name" > "$name.sha256")
+      - name: Release notes
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          awk -v v="${TAG#v}" '/^## \[/{p=index($0,"[" v "]")>0;next} /^\[[^]]*\]: /{p=0} p' CHANGELOG.md > notes.md
+          grep -q '[^[:space:]]' notes.md || { echo "CHANGELOG.md has no entry for ${TAG#v}"; exit 1; }
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp dist-src/* dist/
+          (cd dist && sha256sum cambench-* > SHA256SUMS)
+          gh release create "${GITHUB_REF_NAME}" dist/* --title "${GITHUB_REF_NAME}" --notes-file notes.md

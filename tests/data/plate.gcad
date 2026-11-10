@@ -1,0 +1,7 @@
+rect 60 40
+base: extrude 10
+plane base.end
+circle 10
+cut 4
+plane base.end
+hole 4 -22,-12 22,-12 -22,12 22,12
