@@ -18,6 +18,8 @@ struct Loaded {
     report: Report,
     texture: TextureHandle,
     stock_size: [f64; 3],
+    tags: Vec<usize>,
+    times: Vec<f64>,
 }
 
 struct App {
@@ -28,6 +30,7 @@ struct App {
     browser: Option<Browser>,
     post: usize,
     show_rapids: bool,
+    scrub: usize,
     notice: Option<(String, bool)>,
 }
 
@@ -58,6 +61,7 @@ impl App {
             browser: None,
             post: 0,
             show_rapids: true,
+            scrub: usize::MAX,
             notice: None,
         };
         if !app.path.is_empty() {
@@ -75,7 +79,11 @@ impl App {
                 let (job, report) = run(&src, &base)?;
                 let texture =
                     ctx.load_texture("stock", stock_image(&report), TextureOptions::NEAREST);
+                let tags = report.program.op_of_moves();
+                let times = report.program.move_seconds();
                 Ok(Loaded {
+                    tags,
+                    times,
                     report,
                     texture,
                     stock_size: [job.stock[0], job.stock[1], job.stock[2]],
@@ -84,6 +92,7 @@ impl App {
         if let Err(e) = &result {
             self.notice = Some((e.clone(), true));
         }
+        self.scrub = usize::MAX;
         self.loaded = Some(result);
     }
 
@@ -153,7 +162,7 @@ impl App {
         let avail = ui.available_size();
         let (w, h) = (l.stock_size[0] as f32, l.stock_size[1] as f32);
         let scale = ((avail.x - 4.0) / w)
-            .min((avail.y - 40.0).max(120.0) / h)
+            .min((avail.y - 120.0).max(120.0) / h)
             .max(1.0);
         let (rect, _) = ui.allocate_exact_size(Vec2::new(w * scale, h * scale), Sense::hover());
         let painter = ui.painter_at(rect);
@@ -169,21 +178,57 @@ impl App {
                 rect.max.y - p[1] as f32 * scale,
             )
         };
+        let moves = l.report.program.moves();
+        let last = moves.len().saturating_sub(1);
+        let upto = self.scrub.min(last);
+        let palette = [READOUT, TRACE, OK, WARN, FAULT, SAFE, VALUE];
         let mut prev: Option<[f64; 3]> = None;
-        for m in l.report.program.moves() {
+        for (i, m) in moves.iter().enumerate().take(upto + 1) {
             if let Some(p) = prev {
                 let flat_rapid = m.rapid && p[0] == m.to[0] && p[1] == m.to[1];
                 if !flat_rapid && (!m.rapid || self.show_rapids) {
+                    let colour = palette[l.tags[i] % palette.len()];
                     let colour = if m.rapid {
-                        TRACE.gamma_multiply(0.6)
+                        colour.gamma_multiply(0.35)
                     } else {
-                        READOUT
+                        colour
                     };
                     painter.line_segment([at(p), at(m.to)], Stroke::new(1.0, colour));
                 }
             }
             prev = Some(m.to);
         }
+        if let Some(p) = prev {
+            painter.circle_stroke(at(p), 5.0, Stroke::new(1.5, FAULT));
+        }
+        ui.add_space(6.0);
+        let mut at_move = upto;
+        Line::new()
+            .legend("timeline")
+            .column(ui, 98.0)
+            .measured(&format!(
+                "{} of {}  {}m{:02}s of {}m{:02}s",
+                upto + 1,
+                moves.len(),
+                (l.times[upto] / 60.0) as u32,
+                (l.times[upto] % 60.0) as u32,
+                (l.times[last] / 60.0) as u32,
+                (l.times[last] % 60.0) as u32
+            ))
+            .show(ui);
+        ui.spacing_mut().slider_width = (ui.available_width() - 80.0).max(120.0);
+        ui.add(egui::Slider::new(&mut at_move, 0..=last).show_value(false));
+        self.scrub = at_move;
+        ui.horizontal_wrapped(|ui| {
+            for (k, op) in l.report.program.ops.iter().enumerate() {
+                chip(
+                    ui,
+                    &format!("{} {}", op.line, op.verb),
+                    palette[k % palette.len()],
+                    true,
+                );
+            }
+        });
         ui.add_space(6.0);
         switch(
             ui,

@@ -142,6 +142,42 @@ impl Program {
         out
     }
 
+    pub fn op_of_moves(&self) -> Vec<usize> {
+        let mut out = Vec::new();
+        let mut seen = 0;
+        for k in 0..self.ops.len() {
+            let prefix = Program {
+                stock: self.stock,
+                clearance: self.clearance,
+                rapid: self.rapid,
+                laser_ratio: self.laser_ratio,
+                ops: self.ops[..=k].to_vec(),
+            };
+            let n = prefix.moves().len();
+            out.extend(std::iter::repeat_n(k, n.saturating_sub(seen)));
+            seen = n;
+        }
+        out
+    }
+
+    pub fn move_seconds(&self) -> Vec<f64> {
+        let mut pos = [0.0, 0.0, self.clearance];
+        let mut t = 0.0;
+        self.moves()
+            .iter()
+            .map(|m| {
+                let len = dist3(pos, m.to);
+                t += if m.rapid {
+                    len / self.rapid
+                } else {
+                    len / m.feed.max(1.0)
+                } * 60.0;
+                pos = m.to;
+                t
+            })
+            .collect()
+    }
+
     pub fn estimate_seconds(&self) -> f64 {
         let mut pos = [0.0; 3];
         let mut t = 0.0;
